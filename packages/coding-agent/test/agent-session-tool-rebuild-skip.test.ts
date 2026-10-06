@@ -117,8 +117,8 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		 * path. Existing tests leave this off, so their rebuild carries no catalog.
 		 */
 		exposeXdevCatalog?: boolean;
-		/** Optional per-turn system prompt replacement returned by before_agent_start. */
-		beforeAgentStartSystemPrompt?: string[];
+		/** Optional per-turn system prompt override returned by before_agent_start; a function derives it from the base. */
+		beforeAgentStartSystemPrompt?: string[] | ((base: string[]) => string[]);
 		/** Pre-loaded skills handed to the session's hint snapshot. */
 		skills?: Skill[];
 	}
@@ -197,7 +197,12 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 			},
 			extensionRunner: options.beforeAgentStartSystemPrompt
 				? ({
-						emitBeforeAgentStart: async () => ({ systemPrompt: options.beforeAgentStartSystemPrompt }),
+						emitBeforeAgentStart: async (_prompt: string, _images: unknown, base: string[]) => ({
+							systemPrompt:
+								typeof options.beforeAgentStartSystemPrompt === "function"
+									? options.beforeAgentStartSystemPrompt(base)
+									: options.beforeAgentStartSystemPrompt,
+						}),
 						emit: async () => undefined,
 					} as unknown as ExtensionRunner)
 				: undefined,
@@ -1354,6 +1359,25 @@ These tools became available:
 		const notices = mountNoticesIn(contexts[0]);
 		expect(notices).toHaveLength(1);
 		expect(notices[0]).toContain("xd://mcp__nucleus_search");
+	});
+
+	it("skips the mount notice when a before_agent_start override still carries the base catalog", async () => {
+		// Extensions commonly append to the base instead of replacing it, some by
+		// flattening the parts into one comma-joined string. The provider prompt
+		// still lists the device in its catalog, so re-announcing it duplicates docs.
+		const { session, contexts, systemPrompts } = newSession(async toolNames => `tools:${toolNames.join(",")}`, {
+			xdev: createTestXdevState(),
+			responses: [{ content: ["ok"] }],
+			exposeXdevCatalog: true,
+			beforeAgentStartSystemPrompt: base => [`${String(base)}\n\nextension addendum`],
+		});
+		const search = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		await session.refreshMCPTools([search]);
+		await session.prompt("hi");
+
+		expect(systemPrompts[0]?.join("\n")).toContain("xd:// catalog: mcp__nucleus_search");
+		expect(systemPrompts[0]?.join("\n")).toContain("extension addendum");
+		expect(mountNoticesIn(contexts[0] ?? [])).toHaveLength(0);
 	});
 
 	it("does not emit an unmount notice for a catalog device unmounted before delivery (#7139)", async () => {

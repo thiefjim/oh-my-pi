@@ -7424,7 +7424,7 @@ export class AgentSession implements SettingsScope {
 		generation: number,
 		signal: AbortSignal | undefined,
 		origin: "direct" | "queued",
-	): Promise<QueuedMessagePreparation & { baseXdevCatalogDelivered: boolean }> {
+	): Promise<QueuedMessagePreparation> {
 		const sessionGeneration = this.#sessionGeneration;
 		const alreadyDisposing = this.#isDisposed && origin === "direct";
 		const isCurrent = () =>
@@ -7432,7 +7432,7 @@ export class AgentSession implements SettingsScope {
 			this.#sessionGeneration === sessionGeneration &&
 			(!this.#isDisposed || alreadyDisposing) &&
 			!signal?.aborted;
-		const cancelled = { baseXdevCatalogDelivered: false, commit: () => undefined };
+		const cancelled = { commit: () => undefined };
 		for (let attempt = 0; attempt < AGENT_START_POLICY_MAX_ATTEMPTS; attempt++) {
 			await this.#memory.transition;
 			if (!isCurrent()) return cancelled;
@@ -7480,7 +7480,6 @@ export class AgentSession implements SettingsScope {
 			}
 			if (!overrideIsCurrent()) continue;
 			return {
-				baseXdevCatalogDelivered: result?.systemPrompt === undefined,
 				commit: () => {
 					// No await may separate ownership validation from publishing memory and policy.
 					if (!isCurrent() || !overrideIsCurrent()) return undefined;
@@ -7501,6 +7500,22 @@ export class AgentSession implements SettingsScope {
 			this.#queuedMessageDrainBlocked = true;
 		}
 		throw new AgentStartPolicyChangedError();
+	}
+
+	/**
+	 * Whether the agent's effective system prompt still carries the live base
+	 * prompt (and with it the base `xd://` catalog and tool roster). True without
+	 * a per-turn override; with one, only when every non-empty base part appears
+	 * verbatim in it. Substring matching tolerates extensions that append to the
+	 * base or flatten it into a single joined string. A base rebuilt after the
+	 * override was derived no longer matches, so its changes still get notices.
+	 */
+	#effectivePromptCarriesBase(): boolean {
+		const effective = this.agent.state.systemPrompt;
+		const base = this.#tools.baseSystemPrompt;
+		if (effective === base) return true;
+		const joined = effective.join("\n");
+		return base.every(part => part.length === 0 || joined.includes(part));
 	}
 
 	async #promptWithMessage(
@@ -7636,7 +7651,6 @@ export class AgentSession implements SettingsScope {
 			const preparedMessages = preparation.commit();
 			if (!preparedMessages) return false;
 			messages.push(...preparedMessages);
-			const baseXdevCatalogDelivered = preparation.baseXdevCatalogDelivered;
 
 			// Auto thinking: classify this real user turn and set the effective level
 			// before the model request. A user-invoked `/skill:<name>` arrives as a
@@ -7660,7 +7674,7 @@ export class AgentSession implements SettingsScope {
 			// no budget impact, so it is not previewed here — it must always ship
 			// alongside the schema change it describes (see below).
 			const previewXdevMountNotice = isUserQueuedMessage(message)
-				? this.#tools.peekPendingXdevMountNotice({ baseCatalogDelivered: baseXdevCatalogDelivered })
+				? this.#tools.peekPendingXdevMountNotice({ baseCatalogDelivered: this.#effectivePromptCarriesBase() })
 				: undefined;
 			const maintenanceMessages = previewXdevMountNotice?.notice ? [...messages] : messages;
 			if (maintenanceMessages !== messages && previewXdevMountNotice?.notice) {
@@ -7679,12 +7693,12 @@ export class AgentSession implements SettingsScope {
 			// the wire tool list even when a roster change landed during maintenance.
 			const xdevMountNotice = previewXdevMountNotice
 				? this.#tools.takePendingXdevMountNotice({
-						baseCatalogDelivered: baseXdevCatalogDelivered,
+						baseCatalogDelivered: this.#effectivePromptCarriesBase(),
 						expectedContentKey: previewXdevMountNotice.contentKey,
 					})
 				: undefined;
 			const toolRosterNotice = isUserQueuedMessage(message)
-				? this.#tools.takePendingToolRosterNotice({ baseDelivered: baseXdevCatalogDelivered })
+				? this.#tools.takePendingToolRosterNotice({ baseDelivered: this.#effectivePromptCarriesBase() })
 				: undefined;
 			const evalPreludeNotice = isUserQueuedMessage(message) ? this.#tools.takeEvalPreludeNotice() : undefined;
 			const sessionAgentNotice = isUserQueuedMessage(message) ? this.#tools.takeSessionAgentNotice() : undefined;

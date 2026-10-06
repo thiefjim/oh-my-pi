@@ -1478,9 +1478,9 @@ export class SessionTools {
 	 * availability in lockstep with the wire tool list.
 	 *
 	 * When a rebuilt base is delivered, the notice includes only changes made after
-	 * that snapshot. A per-turn `before_agent_start` override that hides the rebuilt
-	 * base instead receives the complete delta from the provider's last known
-	 * roster.
+	 * that snapshot. A per-turn `before_agent_start` override that omits the
+	 * rebuilt base's content (an opaque replacement) instead receives the complete
+	 * delta from the provider's last known roster.
 	 */
 	takePendingToolRosterNotice(options: {
 		baseDelivered: boolean;
@@ -1670,12 +1670,14 @@ export class SessionTools {
 		const announcedMounts = new Set(this.#announcedMounts);
 		// A pending add for a device the outgoing base prompt already lists in its
 		// catalog needs no notice line — but only when the final provider prompt
-		// still carries that base catalog. A `before_agent_start` replacement drops
-		// it, so its additions must remain in the notice. Record prompt-carried
-		// devices announced here, after the final prompt is known and immediately
-		// before delivery. The pending delta remains untouched by rebuilds, letting
-		// {@link #notifyXdevMountDelta} cancel a mount followed by an unmount before
-		// any request is sent (issue #7139 reviews).
+		// still carries that base catalog. An opaque `before_agent_start`
+		// replacement that omits the base content drops it, so its additions must
+		// remain in the notice; an override that keeps every base part does not.
+		// Record prompt-carried devices announced here, after the final prompt is
+		// known and immediately before delivery. The pending delta remains
+		// untouched by rebuilds, letting {@link #notifyXdevMountDelta} cancel a
+		// mount followed by an unmount before any request is sent (issue #7139
+		// reviews).
 		if (baseCatalogDelivered) {
 			for (const name of pending.added) {
 				if (this.#basePromptXdevNames.has(name)) announcedMounts.add(name);
